@@ -2079,8 +2079,69 @@ sp_head::execute_function(THD *thd, Item **argp, uint argcount,
     /* Arguments must be fixed in Item_func_sp::fix_fields */
     DBUG_ASSERT(argp[arg_no]->fixed());
 
-    if ((err_status= (*func_ctx)->set_parameter(thd, arg_no, &(argp[arg_no]))))
-      goto err_with_cleanup;
+    if (!argp[arg_no])
+      break;
+
+    sp_variable *spvar= m_pcont->find_variable(arg_no);
+
+    if (!spvar)
+      continue;
+
+    if (spvar->mode != sp_variable::MODE_IN)
+    {
+      Settable_routine_parameter *srp=
+        argp[arg_no]->get_settable_routine_parameter();
+
+      if (!srp)
+      {
+        my_error(ER_SP_NOT_VAR_ARG, MYF(0), arg_no+1, ErrConvDQName(this).ptr());
+        err_status= TRUE;
+        break;
+      }
+
+      /*
+        Check if the function is called from SELECT/INSERT/UPDATE query and parameter is OUT or INOUT.
+        If yes, it is an invalid call - throw error.
+      */
+      if (thd->lex->sql_command == SQLCOM_SELECT || 
+          thd->lex->sql_command == SQLCOM_INSERT ||
+          thd->lex->sql_command == SQLCOM_INSERT_SELECT ||
+          thd->lex->sql_command == SQLCOM_UPDATE)
+      {
+        my_error(ER_SF_OUT_INOUT_ARG_NOT_ALLOWED, MYF(0), arg_no+1, m_name.str);
+        DBUG_RETURN(TRUE);
+      }
+
+      srp->set_required_privilege(spvar->mode == sp_variable::MODE_INOUT);
+    }
+
+    if (spvar->mode == sp_variable::MODE_OUT)
+    {
+      Item_null *null_item= new (thd->mem_root) Item_null(thd);
+      Item *tmp_item= null_item;
+
+      if (!null_item ||
+          (*func_ctx)->set_parameter(thd, arg_no, &tmp_item))
+      {
+        DBUG_PRINT("error", ("set variable failed"));
+        err_status= TRUE;
+        goto err_with_cleanup;
+      }
+    }
+    else
+    {
+      if ((*func_ctx)->set_parameter(thd, arg_no, &(argp[arg_no])))
+      {
+        DBUG_PRINT("error", ("set variable 2 failed"));
+        err_status= TRUE;
+        goto err_with_cleanup;
+      }
+    }
+
+    TRANSACT_TRACKER(add_trx_state_from_thd(thd));
+
+//    if ((err_status= (*func_ctx)->set_parameter(thd, arg_no, &(argp[arg_no]))))
+//      goto err_with_cleanup;
   }
 
   /*
@@ -2201,6 +2262,47 @@ sp_head::execute_function(THD *thd, Item **argp, uint argcount,
     {
       my_error(ER_SP_NORETURNEND, MYF(0), m_name.str);
       err_status= TRUE;
+    }
+    else
+    {
+      /*
+        Copy back all OUT or INOUT values to the previous frame, or
+        set global user variables
+      */
+      for (arg_no= 0; arg_no < argcount; arg_no++)
+      {
+        sp_variable *spvar= m_pcont->find_variable(arg_no);
+
+        if (spvar->mode == sp_variable::MODE_IN)
+          continue;
+
+        Settable_routine_parameter *srp=
+          argp[arg_no]->get_settable_routine_parameter();
+
+        DBUG_ASSERT(srp);
+
+        sp_rcontext *nctx = octx;
+        if(!octx)
+        {
+          nctx = *func_ctx;
+        }
+
+        if (srp->set_value(thd, nctx, (*func_ctx)->get_variable_addr(arg_no)))
+        {
+          DBUG_PRINT("error", ("set value failed"));
+          err_status= TRUE;
+          break;
+        }
+
+        Send_field *out_param_info= new (thd->mem_root) Send_field(thd, (*func_ctx)->get_parameter(arg_no));
+        out_param_info->db_name= m_db;
+        out_param_info->table_name= m_name;
+        out_param_info->org_table_name= m_name;
+        out_param_info->col_name= spvar->name;
+        out_param_info->org_col_name= spvar->name;
+
+        srp->set_out_param_info(out_param_info);
+      }
     }
   }
 
