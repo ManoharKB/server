@@ -48,7 +48,7 @@ bool transactional_lock_enabled();
 #define x_context /* empty */
 
 #  include <immintrin.h>
-#  ifdef __GNUC__
+#  if defined __GNUC__ && !defined __INTEL_COMPILER
 #   define TRANSACTIONAL_TARGET __attribute__((target("rtm")))
 #   define TRANSACTIONAL_INLINE __attribute__((target("rtm"),always_inline))
 #  else
@@ -81,7 +81,7 @@ static inline bool transactional_lock_enabled() { return true; }
 #  define TRANSACTIONAL_INLINE /* nothing */
 
 #  ifndef __powerpc64__
-typedef char[sizeof(__htm_tdb)] TM_buff_type;
+typedef unsigned long long[16] TM_buff_type;
 #  endif
 
 #define x_context TM_buff_type TM_buff
