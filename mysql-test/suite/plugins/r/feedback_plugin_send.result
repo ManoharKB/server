@@ -42,5 +42,5 @@ VARIABLE_VALUE>0	VARIABLE_NAME
 deallocate prepare stmt;
 set global sql_mode=ONLY_FULL_GROUP_BY;
 # restart
-16: feedback plugin: report to 'http://mariadb.org/feedback_plugin/post' was sent
-16: feedback plugin: server replied 'ok'
+feedback plugin: report to 'http://mariadb.org/feedback_plugin/post' was sent
+feedback plugin: server replied 'ok'
