@@ -82,6 +82,12 @@
 */
 #define FT_KEYPART   (MAX_FIELDS+10)
 
+/*
+  We assume that when we do hash join, only 10 % rows in the hash will
+  match the current found row.
+*/
+#define HASH_FANOUT 0.1
+
 const char *join_type_str[]={ "UNKNOWN","system","const","eq_ref","ref",
 			      "MAYBE_REF","ALL","range","index","fulltext",
 			      "ref_or_null","unique_subquery","index_subquery",
@@ -7579,6 +7585,7 @@ static double matching_candidates_in_table(JOIN_TAB *s,
   if (with_found_constraint)
     dbl_records-= dbl_records/4;
 
+  DBUG_ASSERT(dbl_records <= s->records);
   /*
     Ensure we return at least one row if there is any possibility to have
     a matching row.  Having rows >= 1.0 helps ensure that when we calculate
@@ -7691,8 +7698,7 @@ best_access_path(JOIN      *join,
   KEYUSE *best_key=         0;
   uint best_max_key_part=   0;
   my_bool found_constraint= 0;
-  double best=              DBL_MAX;
-  double best_time=         DBL_MAX;
+  double best_cost=         DBL_MAX;
   double records=           DBL_MAX;
   double best_filter_cmp_gain;
   table_map best_ref_depends_map= 0;
@@ -8157,17 +8163,16 @@ best_access_path(JOIN      *join,
             set_if_smaller(tmp, (double) thd->variables.max_seeks_for_key);
             tmp= cost_for_index_read(thd, table, key, (ha_rows) tmp,
                                      (ha_rows) s->worst_seeks);
-        got_cost2:
-            tmp= COST_MULT(tmp, record_count);
           }
           else
           {
             if (!(found_part & 1))
               cause= "no predicate for first keypart";
-            tmp= best_time;                    // Do nothing
+            tmp= best_cost;                    // Do nothing
           }
         }
 
+    got_cost2:
         tmp= COST_ADD(tmp, s->startup_cost);
         loose_scan_opt.check_ref_access_part2(key, start_key, records, tmp,
                                               found_ref);
@@ -8190,13 +8195,13 @@ best_access_path(JOIN      *join,
                                table->key_info[filter->key_no].name);
         }
       }
+      tmp= COST_ADD(tmp, records/TIME_FOR_COMPARE);
       trace_access_idx.add("rows", records).add("cost", tmp);
-
-      if (tmp + 0.0001 < best_time - records/TIME_FOR_COMPARE)
+      if (tmp + 0.0001 < best_cost)
       {
-        trace_access_idx.add("chosen", true);
-        best_time= COST_ADD(tmp, records/TIME_FOR_COMPARE);
-        best= tmp;
+        trace_access_idx.add("join_cost", COST_MULT(tmp, record_count)).
+        add("chosen", true);
+        best_cost= tmp;                         // Missing record_count
         best_records= records;
         best_key= start_key;
         best_max_key_part= max_key_part;
@@ -8211,7 +8216,13 @@ best_access_path(JOIN      *join,
       }
       cause= NULL;
     } /* for each key */
+
     records= best_records;
+    /*
+      The cost for doing one lookup have to be done for each previous row
+      combination.
+    */
+    best_cost= COST_MULT(best_cost, record_count);
   }
 
   /* 
@@ -8232,25 +8243,48 @@ best_access_path(JOIN      *join,
        join->allowed_outer_join_with_cache))    // (2)
   {
     Json_writer_object trace_access_hash(thd);
-    double join_sel= 0.1;
-    double refills;
+    double refills, cmp_time;
     /* Estimate the cost of the hash join access to the table */
     double rnd_records= matching_candidates_in_table(s, found_constraint,
                                                      use_cond_selectivity);
-
-    tmp= s->quick ? s->quick->read_time : s->scan_time();
-    double cmp_time= (s->records - rnd_records)/TIME_FOR_COMPARE;
-    tmp= COST_ADD(tmp, cmp_time);
+    /*
+      The following cost calculation is identical to the cost calculation for
+      the join cache later on, except for the HASH_FANOUT
+    */
+    if (s->quick)
+    {
+      /*
+        Cost of reading rows through opt_range including comparing the rows
+        with the attached WHERE clause.
+      */
+      tmp= s->quick->read_time;
+    }
+    else
+    {
+      tmp= s->scan_time();
+      /*
+        Cost of comparing the found row with the attached WHERE
+        This is not part of scan_time()!
+      */
+      tmp= COST_ADD(tmp, s->records / TIME_FOR_COMPARE);
+    }
 
     /* We read the table as many times as join buffer becomes full. */
     refills= (1.0 + floor((double) cache_record_length(join,idx) *
                           record_count /
                           (double) thd->variables.join_buff_size));
     tmp= COST_MULT(tmp, refills);
-    best_time= COST_ADD(tmp,
-                        COST_MULT((record_count*join_sel) / TIME_FOR_COMPARE,
-                                  rnd_records));
-    best= tmp;
+
+    /*
+      Cost of doing the hash lookup and check all matching rows with the
+      WHERE clause.
+      We assume here that, thanks to the hash, we don't have to compare all
+      row combinations, only a HASH_FANOUT (10%) rows in the cache.
+    */
+    cmp_time= (rnd_records * record_count * HASH_FANOUT / TIME_FOR_COMPARE);
+    tmp= COST_ADD(tmp, cmp_time);
+
+    best_cost= tmp;
     records= rnd_records;
     best_key= hj_start_key;
     best_ref_depends_map= 0;
@@ -8260,7 +8294,7 @@ best_access_path(JOIN      *join,
     trace_access_hash.add("type", "hash");
     trace_access_hash.add("index", "hj-key");
     trace_access_hash.add("cost", rnd_records);
-    trace_access_hash.add("cost", best);
+    trace_access_hash.add("cost", best_cost);
     trace_access_hash.add("chosen", true);
   }
 
@@ -8300,7 +8334,7 @@ best_access_path(JOIN      *join,
         be used for cases with small datasets, which is annoying.
   */
   Json_writer_object trace_access_scan(thd);
-  if ((records >= s->found_records || best > s->read_time) &&            // (1)
+  if ((records >= s->found_records || best_cost > s->read_time) &&       // (1)
       !(best_key && best_key->key == MAX_KEY) &&                         // (2)
       !(s->quick &&
         s->quick->get_type() != QUICK_SELECT_I::QS_TYPE_GROUP_MIN_MAX && // (2)
@@ -8313,6 +8347,7 @@ best_access_path(JOIN      *join,
   {                                             // Check full join
     double rnd_records= matching_candidates_in_table(s, found_constraint,
                                                       use_cond_selectivity);
+    DBUG_ASSERT(rnd_records <= s->records);
 
     /*
       Range optimizer never proposes a RANGE if it isn't better
@@ -8336,9 +8371,7 @@ best_access_path(JOIN      *join,
         access (see first else-branch below), but we don't take it into 
         account here for range/index_merge access. Find out why this is so.
       */
-      double cmp_time= (s->found_records - rnd_records)/TIME_FOR_COMPARE;
-      tmp= COST_MULT(record_count,
-                     COST_ADD(s->quick->read_time, cmp_time));
+      tmp= COST_MULT(s->quick->read_time, record_count);
 
       if ( s->quick->get_type() == QUICK_SELECT_I::QS_TYPE_RANGE)
       {
@@ -8376,8 +8409,9 @@ best_access_path(JOIN      *join,
         type= JT_ALL;
       }
 
-      if ((s->table->map & join->outer_join) || disable_jbuf)     // Can't use join cache
+      if ((s->table->map & join->outer_join) || disable_jbuf)
       {
+        double cmp_time;
         /*
           Simple scan
 
@@ -8387,23 +8421,39 @@ best_access_path(JOIN      *join,
           - Compare with the full where and skip rows which does not satisfy
             the join condition
         */
-        double cmp_time= (s->records - rnd_records)/TIME_FOR_COMPARE;
-        tmp= COST_MULT(record_count, COST_ADD(tmp,cmp_time));
+        /* Calculate cost of checking the attached WHERE */
+        cmp_time= s->records/TIME_FOR_COMPARE;
+        tmp= COST_ADD(tmp, cmp_time);
+        /*
+          If this is not the first table we have to compare the rows against
+          all previous row combinations
+        */
+        if (idx != join->const_tables)
+        {
+          /* Calculate cost of checking matched rows against the join cache */
+          cmp_time= rnd_records/TIME_FOR_COMPARE;
+          tmp= COST_ADD(tmp, cmp_time);
+          /* We do the above for every row in the cache */
+          tmp= COST_MULT(tmp, record_count);
+        }
       }
       else
       {
-        double refills= (1.0 + floor((double) cache_record_length(join,idx) *
-                        (record_count /
-                         (double) thd->variables.join_buff_size)));
+        /* Scan trough join cache */
+        double cmp_time, refills;
+
+        /* Calculate cost of checking the attached WHERE */
+        cmp_time= s->records / TIME_FOR_COMPARE;
+        tmp= COST_ADD(tmp, cmp_time);
+
+        /* Calculate cost of refills */
+        refills= (1.0 + floor((double) cache_record_length(join,idx) *
+                              (record_count /
+                               (double) thd->variables.join_buff_size)));
         tmp= COST_MULT(tmp, refills);
-        /* 
-            We don't make full cartesian product between rows in the scanned
-           table and existing records because we skip all rows from the
-           scanned table, which does not satisfy join condition when 
-           we read the table (see flush_cached_records for details). Here we
-           take into account cost to read and skip these records.
-        */
-        double cmp_time= (s->records - rnd_records)/TIME_FOR_COMPARE;
+
+        /* Cost of compare matching rows against the rows in the join cache */
+        cmp_time= (rnd_records * record_count / TIME_FOR_COMPARE);
         tmp= COST_ADD(tmp, cmp_time);
       }
     }
@@ -8417,29 +8467,23 @@ best_access_path(JOIN      *join,
     else
       tmp+= s->startup_cost;
 
-    /*
-      We estimate the cost of evaluating WHERE clause for found records
-      as record_count * rnd_records / TIME_FOR_COMPARE. This cost plus
-      tmp give us total cost of using TABLE SCAN
-    */
-
     best_filter_cmp_gain= (best_filter ?
                            best_filter->get_cmp_gain(record_count * records) :
                            0);
     trace_access_scan.add("resulting_rows", rnd_records);
     trace_access_scan.add("cost", tmp);
 
-    if (best == DBL_MAX ||
-        COST_ADD(tmp, record_count/TIME_FOR_COMPARE*rnd_records) <
-         (best_key->is_for_hash_join() ? best_time :
-          COST_ADD(best - best_filter_cmp_gain,
-                   record_count/TIME_FOR_COMPARE*records)))
+    /* TODO: Document the following if */
+    if (best_cost == DBL_MAX ||
+        tmp <
+        (best_key->is_for_hash_join() ? best_cost :
+         COST_ADD(best_cost,-best_filter_cmp_gain)))
     {
       /*
         If the table has a range (s->quick is set) make_join_select()
         will ensure that this will be used
       */
-      best= tmp;
+      best_cost= tmp;
       records= rnd_records;
       best_key= 0;
       best_filter= 0;
@@ -8463,7 +8507,7 @@ best_access_path(JOIN      *join,
 
   /* Update the cost information for the current partial plan */
   pos->records_read= records;
-  pos->read_time=    best;
+  pos->read_time=    best_cost;
   pos->key=          best_key;
   pos->table=        s;
   pos->ref_depend_map= best_ref_depends_map;
