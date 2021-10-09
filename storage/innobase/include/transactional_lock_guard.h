@@ -81,7 +81,7 @@ static inline bool transactional_lock_enabled() { return true; }
 #  define TRANSACTIONAL_INLINE /* nothing */
 
 #  ifndef __powerpc64__
-typedef unsigned long long[16] TM_buff_type;
+typedef unsigned char TM_buff_type[sizeof(__htm_tdb)];
 #  endif
 
 #define x_context TM_buff_type TM_buff
