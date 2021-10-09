@@ -80,6 +80,10 @@ static inline bool transactional_lock_enabled() { return true; }
 #  define TRANSACTIONAL_TARGET /* nothing */
 #  define TRANSACTIONAL_INLINE /* nothing */
 
+#  ifndef __powerpc64__
+typedef struct __htm_tdb TM_buff_type;
+#  endif
+
 #define x_context TM_buff_type TM_buff
 #define xbegin() __TM_begin(TM_buff) == _HTM_TBEGIN_STARTED
 
