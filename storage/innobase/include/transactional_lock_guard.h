@@ -18,11 +18,8 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #pragma once
 
-#if !defined __s390x__ && (defined __zarch__ || defined __SYSC_ZARCH__)
-# define __s390x__
-#endif
-
-#if defined __powerpc64__ || defined __s390x__ || defined __s390__
+#if defined __powerpc64__ && defined __clang__
+#elif defined __powerpc64__ && defined __GNUC__ && __GNUC__ > 4
 #elif defined _MSC_VER && (defined _M_IX86 || defined _M_X64)
 #elif defined __GNUC__ && (defined __i386__ || defined __x86_64__)
 # if __GNUC__ >= 8
@@ -72,31 +69,18 @@ static inline bool xtest() { return have_transactional_memory && _xtest(); }
 TRANSACTIONAL_INLINE static inline void xabort() { _xabort(0); }
 
 TRANSACTIONAL_INLINE static inline void xend() { _xend(); }
-# elif defined __powerpc64__ || defined __s390x__ || defined __s390__
+# elif defined __powerpc64__
 #  include <htmxlintrin.h>
-#  ifdef __powerpc64__
 extern bool have_transactional_memory;
 bool transactional_lock_enabled();
-#   ifdef __GNUC__
-#    define TRANSACTIONAL_TARGET __attribute__((target("htm")))
-#    define TRANSACTIONAL_INLINE __attribute__((target("htm"),always_inline))
-#   else
-#    define TRANSACTIONAL_TARGET /* nothing */
-#    define TRANSACTIONAL_INLINE /* nothing */
-#   endif
+#   define TRANSACTIONAL_TARGET __attribute__((target("htm")))
+#   define TRANSACTIONAL_INLINE __attribute__((target("htm"),always_inline))
 
 TRANSACTIONAL_INLINE static inline bool xbegin()
 {
   return have_transactional_memory &&
     __TM_begin(nullptr) == _HTM_TBEGIN_STARTED;
 }
-#  else
-static constexpr bool have_transactional_memory= true;
-static inline bool transactional_lock_enabled() { return true; }
-#   define TRANSACTIONAL_TARGET /* nothing */
-#   define TRANSACTIONAL_INLINE /* nothing */
-bool xbegin();
-#  endif
 
 #  ifdef UNIV_DEBUG
 bool xtest();

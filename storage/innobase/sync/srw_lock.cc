@@ -21,9 +21,9 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "my_cpu.h"
 #include "transactional_lock_guard.h"
 
-#ifndef NO_ELISION
-# if defined _MSC_VER && (defined _M_IX86 || defined _M_X64)
-#  include <intrin.h>
+#ifdef NO_ELISION
+#elif defined _MSC_VER && (defined _M_IX86 || defined _M_X64)
+# include <intrin.h>
 bool have_transactional_memory;
 bool transactional_lock_enabled()
 {
@@ -36,8 +36,8 @@ bool transactional_lock_enabled()
   have_transactional_memory= regs[1] & 1U << 11;
   return have_transactional_memory;
 }
-# elif defined __GNUC__ && (defined __i386__ || defined __x86_64__)
-#  include <cpuid.h>
+#elif defined __GNUC__ && (defined __i386__ || defined __x86_64__)
+# include <cpuid.h>
 bool have_transactional_memory;
 bool transactional_lock_enabled()
 {
@@ -50,46 +50,38 @@ bool transactional_lock_enabled()
   return have_transactional_memory;
 }
 
-#  ifdef UNIV_DEBUG
+# ifdef UNIV_DEBUG
 TRANSACTIONAL_TARGET
 bool xtest() { return have_transactional_memory && _xtest(); }
-#  endif
-# elif defined __powerpc64__ || defined __s390x__ || defined __s390__
-#  ifdef __powerpc64__
+# endif
+#elif defined __powerpc64__
 bool have_transactional_memory;
 bool transactional_lock_enabled()
 {
-#   ifdef __linux__
-#    include <sys/auxv.h>
+# ifdef __linux__
+#  include <sys/auxv.h>
 
-#    ifndef PPC_FEATURE2_HTM_NOSC
-#     define PPC_FEATURE2_HTM_NOSC 0x01000000
-#    endif
-#    ifndef PPC_FEATURE2_HTM_NO_SUSPEND
-#     define PPC_FEATURE2_HTM_NO_SUSPEND 0x00080000
-#    endif
+#  ifndef PPC_FEATURE2_HTM_NOSC
+#   define PPC_FEATURE2_HTM_NOSC 0x01000000
+#  endif
+#  ifndef PPC_FEATURE2_HTM_NO_SUSPEND
+#   define PPC_FEATURE2_HTM_NO_SUSPEND 0x00080000
+#  endif
 
-#    ifndef AT_HWCAP2
-#     define AT_HWCAP2 26
-#    endif
+#  ifndef AT_HWCAP2
+#   define AT_HWCAP2 26
+#  endif
+# endif
   return getauxval(AT_HWCAP2) &
     (PPC_FEATURE2_HTM_NOSC | PPC_FEATURE2_HTM_NO_SUSPEND);
-#   endif
 }
-#  else
-bool xbegin() { return __TM_begin(nullptr) == _HTM_TBEGIN_STARTED; }
-#  endif
 
-#  ifdef UNIV_DEBUG
+# ifdef UNIV_DEBUG
 TRANSACTIONAL_TARGET bool xtest()
 {
-#   ifdef __powerpc64__
   return have_transactional_memory &&
     _HTM_STATE (__builtin_ttest ()) == _HTM_TRANSACTIONAL;
-#   endif
-/* FIXME: how to implement xtest() for s390x? */
 }
-#  endif
 # endif
 #endif
 
