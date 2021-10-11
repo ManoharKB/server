@@ -75,7 +75,7 @@ TRANSACTIONAL_INLINE static inline void xend() { _xend(); }
 # elif defined __powerpc64__ || defined __s390x__ || defined __s390__
 #  include <htmxlintrin.h>
 #  ifdef __powerpc64__
-bool have_transactional_memory;
+extern bool have_transactional_memory;
 bool transactional_lock_enabled();
 #   ifdef __GNUC__
 #    define TRANSACTIONAL_TARGET __attribute__((target("htm")))
