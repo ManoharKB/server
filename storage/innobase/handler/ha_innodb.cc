@@ -5744,6 +5744,52 @@ test_ut_format_name()
 }
 #endif /* !DBUG_OFF */
 
+/** Compares InnoDB type against MariaDB type and reports mismatch */
+static bool match_column_type(const dict_field_t *&ib_field,
+                              const dict_field_t *ib_field_end,
+                              const Field *field)
+{
+  size_t is_unsigned;
+  size_t col_type= get_innobase_type_from_mysql_type(&is_unsigned, field);
+
+  /* Ignore InnoDB specific system columns. */
+  while (ib_field->col->mtype == DATA_SYS)
+  {
+    ib_field++;
+
+    if (ib_field >= ib_field_end)
+      return false;
+  }
+
+  /* MariaDB-5.5 compatibility */
+  if ((field->real_type() == MYSQL_TYPE_ENUM ||
+       field->real_type() == MYSQL_TYPE_SET) &&
+      ib_field->col->mtype == DATA_FIXBINARY)
+    col_type= DATA_FIXBINARY;
+
+  if (col_type != ib_field->col->mtype)
+  {
+    /* If the col_type we get from mysql type is a geometry
+    data type, we should check if mtype is a legacy type
+    from 5.6, either upgraded to DATA_GEOMETRY or not.
+    This is indeed not an accurate check, but should be
+    safe, since DATA_BLOB would be upgraded once we create
+    spatial index on it and we intend to use DATA_GEOMETRY
+    for legacy GIS data types which are of var-length. */
+    switch (col_type) {
+    case DATA_GEOMETRY:
+      if (ib_field->col->mtype == DATA_BLOB)
+        break;
+      /* Fall through */
+    default:
+      /* Column type mismatches */
+      return false;
+    }
+  }
+
+  return true;
+}
+
 /** Match index columns between MySQL and InnoDB.
 This function checks whether the index column information
 is consistent between KEY info from mysql and that from innodb index.
@@ -5781,49 +5827,10 @@ innobase_match_index_columns(
 	One hidden assumption here is that the index column sequences
 	are matched up between those in mysql and InnoDB. */
 	for (; key_part != key_end; ++key_part) {
-		ulint	col_type;
-		ibool	is_unsigned;
-		ulint	mtype = innodb_idx_fld->col->mtype;
 
-		/* Need to translate to InnoDB column type before
-		comparison. */
-		col_type = get_innobase_type_from_mysql_type(
-			&is_unsigned, key_part->field);
-
-		/* Ignore InnoDB specific system columns. */
-		while (mtype == DATA_SYS) {
-			innodb_idx_fld++;
-
-			if (innodb_idx_fld >= innodb_idx_fld_end) {
-				DBUG_RETURN(FALSE);
-			}
-		}
-
-		/* MariaDB-5.5 compatibility */
-		if ((key_part->field->real_type() == MYSQL_TYPE_ENUM ||
-		     key_part->field->real_type() == MYSQL_TYPE_SET) &&
-		    mtype == DATA_FIXBINARY) {
-			col_type= DATA_FIXBINARY;
-		}
-
-		if (col_type != mtype) {
-			/* If the col_type we get from mysql type is a geometry
-			data type, we should check if mtype is a legacy type
-			from 5.6, either upgraded to DATA_GEOMETRY or not.
-			This is indeed not an accurate check, but should be
-			safe, since DATA_BLOB would be upgraded once we create
-			spatial index on it and we intend to use DATA_GEOMETRY
-			for legacy GIS data types which are of var-length. */
-			switch (col_type) {
-			case DATA_GEOMETRY:
-				if (mtype == DATA_BLOB) {
-					break;
-				}
-				/* Fall through */
-			default:
-				/* Column type mismatches */
-				DBUG_RETURN(false);
-			}
+		if (!match_column_type(innodb_idx_fld, innodb_idx_fld_end,
+				       key_part->field)) {
+			DBUG_RETURN(false);
 		}
 
 		innodb_idx_fld++;
@@ -6087,6 +6094,35 @@ check_index_consistency(const TABLE* table, const dict_table_t* ib_table)
 			goto func_exit;
 		}
 	}
+
+	if (mysql_num_index == 0)
+	{
+		const dict_index_t *clust =
+			dict_table_get_first_index(ib_table);
+		ut_ad(clust);
+
+		const dict_field_t *ib_field = clust->fields;
+		const dict_field_t *ib_field_end = clust->fields +
+			clust->n_fields;
+
+		for (uint i = 0; i < table->s->fields; i++)
+		{
+			const Field *field= table->field[i];
+
+			if (field->vcol_info)
+			{
+				ib_field++;
+				continue;
+			}
+
+			if (!match_column_type(ib_field, ib_field_end,
+					       field)) {
+				return false;
+			}
+
+			ib_field++;
+		}
+        }
 
 func_exit:
 	return ret;

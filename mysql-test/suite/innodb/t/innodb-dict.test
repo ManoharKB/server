@@ -1,5 +1,9 @@
 --source include/have_innodb.inc
 
+call mtr.add_suppression("InnoDB indexes are inconsistent with what defined in .frm for table");
+
+let $datadir=`select @@datadir`;
+
 #
 # Fix MySQL Bug#20755615: InnoDB compares column names case sensitively,
 # while according to Storage Engine API column names should be compared
@@ -28,4 +32,17 @@ ALTER TABLE t1 ADD INDEX my_d (D);
 EXPLAIN SELECT d FROM t1 WHERE d = 5;
 EXPLAIN SELECT D FROM t1 WHERE D = 5;
 SHOW CREATE TABLE t1;
+DROP TABLE t1;
+
+
+CREATE TABLE t1 (a INT, b VARCHAR(255)) ENGINE=InnoDB;
+INSERT INTO t1 VALUES(0,'');
+--copy_file $datadir/test/t1.frm $datadir/test/old.frm
+ALTER TABLE t1 MODIFY a INT AFTER b;
+FLUSH TABLES;
+
+--remove_file $datadir/test/t1.frm
+--move_file $datadir/test/old.frm $datadir/test/t1.frm
+
+CHECK TABLE t1;
 DROP TABLE t1;

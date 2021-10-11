@@ -1,3 +1,4 @@
+call mtr.add_suppression("InnoDB indexes are inconsistent with what defined in .frm for table");
 CREATE TABLE t1 (D INT) ENGINE=innodb;
 INSERT INTO t1 VALUES (10);
 ALTER TABLE t1 MODIFY COLUMN d INT;
@@ -37,4 +38,12 @@ t1	CREATE TABLE `t1` (
   `D` int(11) DEFAULT NULL,
   KEY `my_d` (`D`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1
+DROP TABLE t1;
+CREATE TABLE t1 (a INT, b VARCHAR(255)) ENGINE=InnoDB;
+INSERT INTO t1 VALUES(0,'');
+ALTER TABLE t1 MODIFY a INT AFTER b;
+FLUSH TABLES;
+CHECK TABLE t1;
+Table	Op	Msg_type	Msg_text
+test.t1	check	status	OK
 DROP TABLE t1;
