@@ -54,8 +54,8 @@ bool transactional_lock_enabled()
 TRANSACTIONAL_TARGET
 bool xtest() { return have_transactional_memory && _xtest(); }
 #  endif
-# elif defined  __powerpc64__ || defined __s390x__ || defined __s390__
-#  ifdef __power64__
+# elif defined __powerpc64__ || defined __s390x__ || defined __s390__
+#  ifdef __powerpc64__
 bool have_transactional_memory;
 bool transactional_lock_enabled()
 {
@@ -80,12 +80,16 @@ bool transactional_lock_enabled()
 bool xbegin() { return __TM_begin(nullptr) == _HTM_TBEGIN_STARTED; }
 #  endif
 
-TRANSACTIONAL_TARGET
-bool xtest()
+#  ifdef UNIV_DEBUG
+TRANSACTIONAL_TARGET bool xtest()
 {
+#   ifdef __powerpc64__
   return have_transactional_memory &&
     _HTM_STATE (__builtin_ttest ()) == _HTM_TRANSACTIONAL;
+#   endif
+/* FIXME: how to implement xtest() for s390x? */
 }
+#  endif
 # endif
 #endif
 
