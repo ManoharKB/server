@@ -54,6 +54,38 @@ bool transactional_lock_enabled()
 TRANSACTIONAL_TARGET
 bool xtest() { return have_transactional_memory && _xtest(); }
 #  endif
+# elif defined  __powerpc64__ || defined __s390x__ || defined __s390__
+#  ifdef __power64__
+bool have_transactional_memory;
+bool transactional_lock_enabled()
+{
+#   ifdef __linux__
+#    include <sys/auxv.h>
+
+#    ifndef PPC_FEATURE2_HTM_NOSC
+#     define PPC_FEATURE2_HTM_NOSC 0x01000000
+#    endif
+#    ifndef PPC_FEATURE2_HTM_NO_SUSPEND
+#     define PPC_FEATURE2_HTM_NO_SUSPEND 0x00080000
+#    endif
+
+#    ifndef AT_HWCAP2
+#     define AT_HWCAP2 26
+#    endif
+  return getauxval(AT_HWCAP2) &
+    (PPC_FEATURE2_HTM_NOSC | PPC_FEATURE2_HTM_NO_SUSPEND);
+#   endif
+}
+#  else
+bool xbegin() { return __TM_begin(nullptr) == _HTM_TBEGIN_STARTED; }
+#  endif
+
+TRANSACTIONAL_TARGET
+bool xtest()
+{
+  return have_transactional_memory &&
+    _HTM_STATE (__builtin_ttest ()) == _HTM_TRANSACTIONAL;
+}
 # endif
 #endif
 

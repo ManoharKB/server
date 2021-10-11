@@ -45,7 +45,6 @@ static inline bool xtest() { return false; }
 # if defined __i386__||defined __x86_64__||defined _M_IX86||defined _M_X64
 extern bool have_transactional_memory;
 bool transactional_lock_enabled();
-#define x_context /* empty */
 
 #  include <immintrin.h>
 #  if defined __GNUC__ && !defined __INTEL_COMPILER
@@ -74,29 +73,38 @@ TRANSACTIONAL_INLINE static inline void xabort() { _xabort(0); }
 
 TRANSACTIONAL_INLINE static inline void xend() { _xend(); }
 # elif defined __powerpc64__ || defined __s390x__ || defined __s390__
-constexpr bool have_transactional_memory= true;
-static inline bool transactional_lock_enabled() { return true; }
 #  include <htmxlintrin.h>
-#  define TRANSACTIONAL_TARGET /* nothing */
-#  define TRANSACTIONAL_INLINE /* nothing */
+#  ifdef __powerpc64__
+bool have_transactional_memory;
+bool transactional_lock_enabled();
+#   ifdef __GNUC__
+#    define TRANSACTIONAL_TARGET __attribute__((target("htm")))
+#    define TRANSACTIONAL_INLINE __attribute__((target("htm"),always_inline))
+#   else
+#    define TRANSACTIONAL_TARGET /* nothing */
+#    define TRANSACTIONAL_INLINE /* nothing */
+#   endif
 
-#  ifndef __powerpc64__
-typedef unsigned char TM_buff_type[sizeof(__htm_tdb)];
+TRANSACTIONAL_INLINE static inline bool xbegin()
+{
+  return have_transactional_memory &&
+    __TM_begin(nullptr) == _HTM_TBEGIN_STARTED;
+}
+#  else
+static constexpr bool have_transactional_memory= true;
+static inline bool transactional_lock_enabled() { return true; }
+#   define TRANSACTIONAL_TARGET /* nothing */
+#   define TRANSACTIONAL_INLINE /* nothing */
+bool xbegin();
 #  endif
-
-#define x_context TM_buff_type TM_buff
-#define xbegin() __TM_begin(TM_buff) == _HTM_TBEGIN_STARTED
 
 #  ifdef UNIV_DEBUG
-static inline bool xtest()
-{
-  return _HTM_STATE (__builtin_ttest ()) == _HTM_TRANSACTIONAL;
-}
+bool xtest();
 #  endif
 
-static inline void xabort() { __TM_abort(); }
+TRANSACTIONAL_INLINE static inline void xabort() { __TM_abort(); }
 
-static inline void xend() { __TM_end(); }
+TRANSACTIONAL_INLINE static inline void xend() { __TM_end(); }
 # endif
 #endif
 
@@ -104,9 +112,6 @@ template<class mutex>
 class transactional_lock_guard
 {
   mutex &m;
-#ifndef NO_ELISION
-  x_context;
-#endif
 
 public:
   TRANSACTIONAL_INLINE transactional_lock_guard(mutex &m) : m(m)
@@ -143,7 +148,6 @@ class transactional_shared_lock_guard
   mutex &m;
 #ifndef NO_ELISION
   bool elided;
-  x_context;
 #else
   static constexpr bool elided= false;
 #endif

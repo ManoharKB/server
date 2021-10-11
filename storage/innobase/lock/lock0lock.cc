@@ -5734,7 +5734,6 @@ bool lock_table_has_locks(dict_table_t *table)
     return true;
   ulint len;
 #if !defined NO_ELISION && !defined SUX_LOCK_GENERIC
-  x_context;
   if (xbegin())
   {
     if (table->lock_mutex_is_locked())
@@ -6136,9 +6135,6 @@ void lock_sys_t::deadlock_check()
       auto i= Deadlock::to_check.begin();
       if (i == Deadlock::to_check.end())
         break;
-#if !defined NO_ELISION && !defined SUX_LOCK_GENERIC
-      x_context;
-#endif
       if (acquired);
 #if !defined NO_ELISION && !defined SUX_LOCK_GENERIC
       else if (xbegin())
