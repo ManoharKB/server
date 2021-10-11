@@ -55,9 +55,6 @@ TRANSACTIONAL_TARGET
 bool xtest() { return have_transactional_memory && _xtest(); }
 # endif
 #elif defined __powerpc64__
-bool have_transactional_memory;
-bool transactional_lock_enabled()
-{
 # ifdef __linux__
 #  include <sys/auxv.h>
 
@@ -72,8 +69,13 @@ bool transactional_lock_enabled()
 #   define AT_HWCAP2 26
 #  endif
 # endif
+bool have_transactional_memory;
+bool transactional_lock_enabled()
+{
+# ifdef __linux__
   return getauxval(AT_HWCAP2) &
     (PPC_FEATURE2_HTM_NOSC | PPC_FEATURE2_HTM_NO_SUSPEND);
+# endif
 }
 
 # ifdef UNIV_DEBUG

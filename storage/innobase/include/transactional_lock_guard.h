@@ -18,8 +18,8 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #pragma once
 
-#if defined __powerpc64__ && defined __clang__
-#elif defined __powerpc64__ && defined __GNUC__ && __GNUC__ > 4
+#if defined __powerpc64__ && defined __clang__ && defined __linux__
+#elif defined __powerpc64__&&defined __GNUC__&&defined __linux__&&__GNUC__ > 4
 #elif defined _MSC_VER && (defined _M_IX86 || defined _M_X64)
 #elif defined __GNUC__ && (defined __i386__ || defined __x86_64__)
 # if __GNUC__ >= 8
