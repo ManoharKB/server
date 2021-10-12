@@ -395,11 +395,7 @@ void buf_page_write_complete(const IORequest &request)
     }
   }
   else
-  {
     ut_ad(!temp);
-    ut_ad(buf_pool.n_flush_list_);
-    --buf_pool.n_flush_list_;
-  }
 
   pthread_cond_broadcast(&buf_pool.done_flush_page);
   mysql_mutex_unlock(&buf_pool.mutex);
@@ -821,8 +817,6 @@ static bool buf_flush_page(buf_page_t *bpage, bool lru, fil_space_t *space)
   {
     if (lru)
       buf_pool.n_flush_LRU_++;
-    else
-      buf_pool.n_flush_list_++;
     buf_flush_page_count++;
   }
 
@@ -846,8 +840,7 @@ static bool buf_flush_page(buf_page_t *bpage, bool lru, fil_space_t *space)
         : oldest_modification > 2);
   ut_ad(bpage->state() ==
         (rw_lock ? BUF_BLOCK_FILE_PAGE : BUF_BLOCK_ZIP_PAGE));
-  ut_ad(ULINT_UNDEFINED >
-        (lru ? buf_pool.n_flush_LRU_ : buf_pool.n_flush_list_));
+  ut_ad(!lru || ULINT_UNDEFINED > buf_pool.n_flush_LRU_);
   mysql_mutex_unlock(&buf_pool.mutex);
 
   buf_block_t *block= reinterpret_cast<buf_block_t*>(bpage);
@@ -1371,6 +1364,7 @@ static ulint buf_do_flush_list_batch(ulint max_n, lsn_t lsn)
   ulint scanned= 0;
 
   mysql_mutex_assert_owner(&buf_pool.mutex);
+  mysql_mutex_assert_owner(&buf_pool.flush_list_mutex);
 
   const auto neighbors= UT_LIST_GET_LEN(buf_pool.LRU) < BUF_LRU_OLD_MIN_LEN
     ? 0 : srv_flush_neighbors;
@@ -1381,7 +1375,6 @@ static ulint buf_do_flush_list_batch(ulint max_n, lsn_t lsn)
 
   /* Start from the end of the list looking for a suitable block to be
   flushed. */
-  mysql_mutex_lock(&buf_pool.flush_list_mutex);
   ulint len= UT_LIST_GET_LEN(buf_pool.flush_list);
 
   for (buf_page_t *bpage= UT_LIST_GET_LAST(buf_pool.flush_list);
@@ -1461,7 +1454,6 @@ static ulint buf_do_flush_list_batch(ulint max_n, lsn_t lsn)
   }
 
   buf_pool.flush_hp.set(nullptr);
-  mysql_mutex_unlock(&buf_pool.flush_list_mutex);
 
   if (space)
     space->release();
@@ -1471,12 +1463,6 @@ static ulint buf_do_flush_list_batch(ulint max_n, lsn_t lsn)
                                  MONITOR_FLUSH_BATCH_SCANNED_NUM_CALL,
                                  MONITOR_FLUSH_BATCH_SCANNED_PER_CALL,
                                  scanned);
-  if (count)
-    MONITOR_INC_VALUE_CUMULATIVE(MONITOR_FLUSH_BATCH_TOTAL_PAGE,
-                                 MONITOR_FLUSH_BATCH_COUNT,
-                                 MONITOR_FLUSH_BATCH_PAGES,
-                                 count);
-  mysql_mutex_assert_owner(&buf_pool.mutex);
   return count;
 }
 
@@ -1504,28 +1490,31 @@ static ulint buf_flush_list(ulint max_n= ULINT_UNDEFINED, lsn_t lsn= LSN_MAX)
 {
   ut_ad(lsn);
 
-  if (buf_pool.n_flush_list())
-    return 0;
-
   mysql_mutex_lock(&buf_pool.mutex);
-  const bool running= buf_pool.n_flush_list_ != 0;
-  /* FIXME: we are performing a dirty read of buf_pool.flush_list.count
-  while not holding buf_pool.flush_list_mutex */
-  if (running || !UT_LIST_GET_LEN(buf_pool.flush_list))
+  mysql_mutex_lock(&buf_pool.flush_list_mutex);
+  if (buf_pool.flush_list_active || !buf_pool.get_oldest_modification(0))
   {
+    mysql_mutex_unlock(&buf_pool.flush_list_mutex);
     mysql_mutex_unlock(&buf_pool.mutex);
     return 0;
   }
 
-  buf_pool.n_flush_list_++;
+  buf_pool.flush_list_active= true;
   const ulint n_flushed= buf_do_flush_list_batch(max_n, lsn);
-  --buf_pool.n_flush_list_;
+  buf_pool.flush_list_active= false;
+  mysql_mutex_unlock(&buf_pool.flush_list_mutex);
 
   buf_pool.try_LRU_scan= true;
 
   mysql_mutex_unlock(&buf_pool.mutex);
 
   buf_dblwr.flush_buffered_writes();
+
+  if (n_flushed)
+    MONITOR_INC_VALUE_CUMULATIVE(MONITOR_FLUSH_BATCH_TOTAL_PAGE,
+                                 MONITOR_FLUSH_BATCH_COUNT,
+                                 MONITOR_FLUSH_BATCH_PAGES,
+                                 n_flushed);
 
   DBUG_PRINT("ib_buf", ("flush_list completed, " ULINTPF " pages", n_flushed));
   return n_flushed;
@@ -2409,26 +2398,23 @@ ATTRIBUTE_COLD void buf_flush_buffer_pool()
   service_manager_extend_timeout(INNODB_EXTEND_TIMEOUT_INTERVAL,
                                  "Waiting to flush the buffer pool");
 
-  while (buf_pool.n_flush_list() || buf_flush_list_length())
-  {
-    buf_flush_list(srv_max_io_capacity);
-    timespec abstime;
+  mysql_mutex_lock(&buf_pool.flush_list_mutex);
 
-    if (buf_pool.n_flush_list())
-    {
+  while (buf_pool.get_oldest_modification(0))
+  {
+    mysql_mutex_unlock(&buf_pool.flush_list_mutex);
+    buf_flush_list(srv_max_io_capacity);
+
+    if (ulint flush_list_len= buf_flush_list_length())
       service_manager_extend_timeout(INNODB_EXTEND_TIMEOUT_INTERVAL,
                                      "Waiting to flush " ULINTPF " pages",
-                                     buf_flush_list_length());
-      set_timespec(abstime, INNODB_EXTEND_TIMEOUT_INTERVAL / 2);
-      os_aio_wait_until_no_pending_writes();
-      mysql_mutex_lock(&buf_pool.mutex);
-      while (buf_pool.n_flush_list_)
-        my_cond_timedwait(&buf_pool.done_flush_list, &buf_pool.mutex.m_mutex,
-                          &abstime);
-      mysql_mutex_unlock(&buf_pool.mutex);
-    }
+                                     flush_list_len);
+
+    mysql_mutex_lock(&buf_pool.flush_list_mutex);
   }
 
+  mysql_mutex_unlock(&buf_pool.flush_list_mutex);
+  os_aio_wait_until_no_pending_writes();
   ut_ad(!buf_pool.any_io_pending());
 }
 

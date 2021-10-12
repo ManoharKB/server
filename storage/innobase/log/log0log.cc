@@ -1127,10 +1127,12 @@ wait_suspend_loop:
 
 	if (!buf_pool.is_initialised()) {
 		ut_ad(!srv_was_started);
-	} else if (ulint pending_io = buf_pool.io_pending()) {
+	} else if (buf_pool.any_io_pending()) {
 		if (srv_print_verbose_log && count > 600) {
-			ib::info() << "Waiting for " << pending_io << " buffer"
-				" page I/Os to complete";
+			ib::info() << "Waiting for "
+				   << buf_pool.n_pend_reads
+				+ os_aio_pending_writes()
+				   << " buffer page I/Os to complete";
 			count = 0;
 		}
 

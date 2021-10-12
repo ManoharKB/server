@@ -950,14 +950,15 @@ static lsn_t srv_prepare_to_delete_redo_log_file(bool old_exists)
 
 		/* Check if the buffer pools are clean.  If not
 		retry till it is clean. */
-		if (ulint pending_io = buf_pool.io_pending()) {
+		if (buf_pool.any_io_pending()) {
 			count++;
 			/* Print a message every 60 seconds if we
 			are waiting to clean the buffer pools */
 			if (srv_print_verbose_log && count > 600) {
 				ib::info() << "Waiting for "
-					<< pending_io << " buffer "
-					<< "page I/Os to complete";
+					   << buf_pool.n_pend_reads
+					+ os_aio_pending_writes()
+					   << " buffer page I/Os to complete";
 				count = 0;
 			}
 
