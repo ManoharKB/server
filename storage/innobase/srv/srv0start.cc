@@ -325,6 +325,11 @@ static dberr_t create_log_file(bool create_new_db, lsn_t lsn,
 
 	log_sys.log.write_header_durable(lsn);
 
+	ut_ad(srv_startup_is_before_trx_rollback_phase);
+	if (create_new_db) {
+		srv_startup_is_before_trx_rollback_phase = false;
+	}
+
 	mysql_mutex_unlock(&log_sys.mutex);
 
 	log_make_checkpoint();
@@ -1241,7 +1246,7 @@ dberr_t srv_start(bool create_new_db)
 		ut_ad(buf_page_cleaner_is_active);
 	}
 
-	srv_startup_is_before_trx_rollback_phase = !create_new_db;
+	srv_startup_is_before_trx_rollback_phase = true;
 
 	/* Check if undo tablespaces and redo log files exist before creating
 	a new system tablespace */
@@ -1290,7 +1295,6 @@ dberr_t srv_start(bool create_new_db)
 	if (create_new_db) {
 		flushed_lsn = log_sys.get_lsn();
 		log_sys.set_flushed_lsn(flushed_lsn);
-		buf_flush_sync();
 
 		err = create_log_file(true, flushed_lsn, logfile0);
 

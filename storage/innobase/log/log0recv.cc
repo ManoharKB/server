@@ -3180,7 +3180,7 @@ next_page:
 
   /* Instead of flushing, last_batch could sort the buf_pool.flush_list
   in ascending order of buf_page_t::oldest_modification. */
-  buf_flush_sync();
+  buf_flush_sync_batch();
 
   if (!last_batch)
   {

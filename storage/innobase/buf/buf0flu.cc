@@ -1501,7 +1501,7 @@ void buf_flush_wait_batch_end(bool lru)
 @param lsn      buf_pool.get_oldest_modification(LSN_MAX) target
 @return the number of processed pages
 @retval 0 if a buf_pool.flush_list batch is already running */
-ulint buf_flush_list(ulint max_n, lsn_t lsn)
+static ulint buf_flush_list(ulint max_n= ULINT_UNDEFINED, lsn_t lsn= LSN_MAX)
 {
   ut_ad(lsn);
 
@@ -1923,10 +1923,6 @@ ATTRIBUTE_COLD static void buf_flush_sync_for_checkpoint(lsn_t lsn)
                                    MONITOR_FLUSH_SYNC_PAGES, n_flushed);
     }
 
-    /* Attempt to perform a log checkpoint upon completing each batch. */
-    if (recv_recovery_is_on())
-      recv_sys.apply(true);
-
     switch (srv_file_flush_method) {
     case SRV_NOSYNC:
     case SRV_O_DIRECT_NO_FSYNC:
@@ -1943,7 +1939,8 @@ ATTRIBUTE_COLD static void buf_flush_sync_for_checkpoint(lsn_t lsn)
     mysql_mutex_unlock(&log_sys.flush_order_mutex);
     const lsn_t checkpoint_lsn= measure ? measure : newest_lsn;
 
-    if (checkpoint_lsn > log_sys.last_checkpoint_lsn + SIZE_OF_FILE_CHECKPOINT)
+    if (!recv_recovery_is_on() &&
+        checkpoint_lsn > log_sys.last_checkpoint_lsn + SIZE_OF_FILE_CHECKPOINT)
     {
       mysql_mutex_unlock(&buf_pool.flush_list_mutex);
       log_checkpoint_low(checkpoint_lsn, newest_lsn);
@@ -2440,17 +2437,39 @@ ATTRIBUTE_COLD void buf_flush_buffer_pool()
   ut_ad(!buf_pool.any_io_pending());
 }
 
+/** Synchronously flush dirty blocks during recv_sys_t::apply().
+NOTE: The calling thread is not allowed to hold any buffer page latches! */
+void buf_flush_sync_batch()
+{
+  mysql_mutex_lock(&buf_pool.flush_list_mutex);
+
+  while (buf_pool.get_oldest_modification(0))
+  {
+    const lsn_t lsn= log_sys.get_lsn();
+    if (buf_flush_sync_lsn < lsn)
+      buf_flush_sync_lsn= lsn;
+    if (buf_flush_sync_lsn)
+    {
+      pthread_cond_signal(&buf_pool.do_flush_list);
+      tpool::tpool_wait_begin();
+      thd_wait_begin(nullptr, THD_WAIT_DISKIO);
+      my_cond_wait(&buf_pool.done_flush_list,
+                   &buf_pool.flush_list_mutex.m_mutex);
+      tpool::tpool_wait_end();
+      thd_wait_end(nullptr);
+    }
+  }
+
+  mysql_mutex_unlock(&buf_pool.flush_list_mutex);
+}
+
 /** Synchronously flush dirty blocks.
 NOTE: The calling thread is not allowed to hold any buffer page latches! */
 void buf_flush_sync()
 {
-  for (;;)
-  {
-    const ulint n_flushed= buf_flush_list(srv_max_io_capacity);
-    buf_flush_wait_batch_end_acquiring_mutex(false);
-    if (!n_flushed && !buf_flush_list_length())
-      return;
-  }
+  if (recv_recovery_is_on())
+    recv_sys.apply(true);
+  buf_flush_sync_batch();
 }
 
 #ifdef UNIV_DEBUG
