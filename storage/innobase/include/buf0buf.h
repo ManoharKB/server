@@ -1650,8 +1650,10 @@ public:
   pthread_cond_t done_flush_LRU;
   /** Number of pending flush_list flush; protected by mutex */
   ulint n_flush_list_;
-  /** broadcast when n_flush_list reaches 0; protected by mutex */
+  /** broadcast when a batch completes; protected by flush_list_mutex */
   pthread_cond_t done_flush_list;
+  /** broadcast when a page is written; protected by mutex */
+  pthread_cond_t done_flush_page;
 
   TPOOL_SUPPRESS_TSAN ulint n_flush_LRU() const { return n_flush_LRU_; }
   TPOOL_SUPPRESS_TSAN ulint n_flush_list() const { return n_flush_list_; }

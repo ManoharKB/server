@@ -1968,6 +1968,7 @@ void innodb_shutdown()
 				     &buf_pool.flush_list_mutex.m_mutex);
 		}
 		mysql_mutex_unlock(&buf_pool.flush_list_mutex);
+		os_aio_wait_until_no_pending_writes();
 		break;
 	case SRV_OPERATION_NORMAL:
 		/* Shut down the persistent files. */

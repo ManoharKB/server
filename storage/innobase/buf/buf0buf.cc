@@ -1237,6 +1237,7 @@ bool buf_pool_t::create()
 
   pthread_cond_init(&done_flush_LRU, nullptr);
   pthread_cond_init(&done_flush_list, nullptr);
+  pthread_cond_init(&done_flush_page, nullptr);
   pthread_cond_init(&do_flush_list, nullptr);
   pthread_cond_init(&done_free, nullptr);
 
@@ -1303,6 +1304,7 @@ void buf_pool_t::close()
 
   pthread_cond_destroy(&done_flush_LRU);
   pthread_cond_destroy(&done_flush_list);
+  pthread_cond_destroy(&done_flush_page);
   pthread_cond_destroy(&do_flush_list);
   pthread_cond_destroy(&done_free);
 
@@ -1509,7 +1511,7 @@ inline bool buf_pool_t::withdraw_blocks()
 				std::max<ulint>(withdraw_target
 						- UT_LIST_GET_LEN(withdraw),
 						srv_LRU_scan_depth));
-			buf_flush_wait_batch_end_acquiring_mutex(true);
+			buf_flush_wait_LRU_batch_end_acquiring_mutex();
 		}
 
 		/* relocate blocks/buddies in withdrawn area */
@@ -3223,7 +3225,7 @@ loop:
           We must not hold buf_pool.mutex while waiting. */
           timespec abstime;
           set_timespec_nsec(abstime, 1000000);
-          my_cond_timedwait(&buf_pool.done_flush_list, &buf_pool.mutex.m_mutex,
+          my_cond_timedwait(&buf_pool.done_flush_page, &buf_pool.mutex.m_mutex,
                             &abstime);
         }
         mtr_memo_push(mtr, block, MTR_MEMO_PAGE_X_FIX);
@@ -3251,7 +3253,7 @@ loop:
         /* Wait for buf_page_write_complete() to release the I/O fix. */
         timespec abstime;
         set_timespec_nsec(abstime, 1000000);
-        my_cond_timedwait(&buf_pool.done_flush_list, &buf_pool.mutex.m_mutex,
+        my_cond_timedwait(&buf_pool.done_flush_page, &buf_pool.mutex.m_mutex,
                           &abstime);
         goto loop;
       }
@@ -3834,9 +3836,6 @@ All pages must be in a replaceable state (not modified or latched). */
 void buf_pool_invalidate()
 {
 	mysql_mutex_lock(&buf_pool.mutex);
-
-	buf_flush_wait_batch_end(true);
-	buf_flush_wait_batch_end(false);
 
 	/* It is possible that a write batch that has been posted
 	earlier is still not complete. For buffer pool invalidation to
