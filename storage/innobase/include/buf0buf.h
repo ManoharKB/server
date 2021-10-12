@@ -1535,7 +1535,7 @@ public:
   @tparam watch      whether to allow watch_is_sentinel()
   @param page_id     page identifier */
   template<bool watch= false>
-  TRANSACTIONAL_TARGET
+  TRANSACTIONAL_INLINE
   bool page_hash_contains(const page_id_t page_id)
   {
     const auto fold= page_id.fold();
@@ -1572,7 +1572,7 @@ public:
   This may only be called after !watch_set() and before invoking watch_unset().
   @param id   page identifier
   @return whether the page was read to the buffer pool */
-  TRANSACTIONAL_TARGET
+  TRANSACTIONAL_INLINE
   bool watch_occurred(const page_id_t id)
   {
     const ulint fold= id.fold();
