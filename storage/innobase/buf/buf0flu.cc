@@ -2429,15 +2429,6 @@ ATTRIBUTE_COLD void buf_flush_page_cleaner_init()
   std::thread(buf_flush_page_cleaner).detach();
 }
 
-/** @return the number of dirty pages in the buffer pool */
-static ulint buf_flush_list_length()
-{
-  mysql_mutex_lock(&buf_pool.flush_list_mutex);
-  const ulint len= UT_LIST_GET_LEN(buf_pool.flush_list);
-  mysql_mutex_unlock(&buf_pool.flush_list_mutex);
-  return len;
-}
-
 /** Flush the buffer pool on shutdown. */
 ATTRIBUTE_COLD void buf_flush_buffer_pool()
 {
@@ -2453,13 +2444,10 @@ ATTRIBUTE_COLD void buf_flush_buffer_pool()
   {
     mysql_mutex_unlock(&buf_pool.flush_list_mutex);
     buf_flush_list(srv_max_io_capacity);
-
-    if (ulint flush_list_len= buf_flush_list_length())
-      service_manager_extend_timeout(INNODB_EXTEND_TIMEOUT_INTERVAL,
-                                     "Waiting to flush " ULINTPF " pages",
-                                     flush_list_len);
-
     mysql_mutex_lock(&buf_pool.flush_list_mutex);
+    service_manager_extend_timeout(INNODB_EXTEND_TIMEOUT_INTERVAL,
+                                   "Waiting to flush " ULINTPF " pages",
+                                   UT_LIST_GET_LEN(buf_pool.flush_list));
   }
 
   mysql_mutex_unlock(&buf_pool.flush_list_mutex);
