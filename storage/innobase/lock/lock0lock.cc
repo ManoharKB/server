@@ -2222,7 +2222,7 @@ lock_rec_move(
 		}
 
 		trx_t* lock_trx = lock->trx;
-		TMTrxGuard tg{*lock_trx};
+		lock_trx->mutex_lock();
 		lock_rec_reset_nth_bit(lock, donator_heap_no);
 
 		/* Note that we FIRST reset the bit, and then set the lock:
@@ -2232,6 +2232,7 @@ lock_rec_move(
 				      receiver_id, receiver.frame,
 				      receiver_heap_no,
 				      lock->index, lock_trx, true);
+		lock_trx->mutex_unlock();
 	}
 
 	ut_ad(!lock_sys_t::get_first(donator_cell, donator_id,
@@ -2384,21 +2385,21 @@ lock_move_reorganize_page(
         }
 
         trx_t *lock_trx= lock->trx;
-	{
-          TMTrxGuard tg{*lock_trx};
+	lock_trx->mutex_lock();
 
-          /* Clear the bit in old_lock. */
-          if (old_heap_no < lock->un_member.rec_lock.n_bits &&
-              lock_rec_reset_nth_bit(lock, old_heap_no))
-          {
-            ut_ad(!page_rec_is_metadata(orec));
+	/* Clear the bit in old_lock. */
+	if (old_heap_no < lock->un_member.rec_lock.n_bits &&
+            lock_rec_reset_nth_bit(lock, old_heap_no))
+        {
+          ut_ad(!page_rec_is_metadata(orec));
 
-            /* NOTE that the old lock bitmap could be too
-            small for the new heap number! */
-            lock_rec_add_to_queue(lock->type_mode, cell, id, block->frame,
-                                  new_heap_no, lock->index, lock_trx, true);
-          }
-	}
+          /* NOTE that the old lock bitmap could be too
+          small for the new heap number! */
+          lock_rec_add_to_queue(lock->type_mode, cell, id, block->frame,
+                                new_heap_no, lock->index, lock_trx, true);
+        }
+
+	lock_trx->mutex_unlock();
 
         if (new_heap_no == PAGE_HEAP_NO_SUPREMUM)
         {
@@ -2506,7 +2507,7 @@ lock_move_rec_list_end(
         }
 
         trx_t *lock_trx= lock->trx;
-        TMTrxGuard tg{*lock_trx};
+        lock_trx->mutex_lock();
 
         if (rec1_heap_no < lock->un_member.rec_lock.n_bits &&
             lock_rec_reset_nth_bit(lock, rec1_heap_no))
@@ -2522,6 +2523,8 @@ lock_move_rec_list_end(
           lock_rec_add_to_queue(type_mode, g.cell2(), new_id, new_block->frame,
                                 rec2_heap_no, lock->index, lock_trx, true);
         }
+
+        lock_trx->mutex_unlock();
       }
     }
   }
@@ -2618,7 +2621,7 @@ lock_move_rec_list_start(
         }
 
         trx_t *lock_trx= lock->trx;
-        TMTrxGuard tg{*lock_trx};
+        lock_trx->mutex_lock();
 
         if (rec1_heap_no < lock->un_member.rec_lock.n_bits &&
             lock_rec_reset_nth_bit(lock, rec1_heap_no))
@@ -2634,6 +2637,8 @@ lock_move_rec_list_start(
           lock_rec_add_to_queue(type_mode, g.cell2(), new_id, new_block->frame,
                                 rec2_heap_no, lock->index, lock_trx, true);
         }
+
+        lock_trx->mutex_unlock();
       }
 
 #ifdef UNIV_DEBUG
@@ -2712,7 +2717,7 @@ lock_rtr_move_rec_list(
         }
 
         trx_t *lock_trx= lock->trx;
-        TMTrxGuard tg{*lock_trx};
+        lock_trx->mutex_lock();
 
         if (rec1_heap_no < lock->un_member.rec_lock.n_bits &&
             lock_rec_reset_nth_bit(lock, rec1_heap_no))
@@ -2728,6 +2733,8 @@ lock_rtr_move_rec_list(
 
           rec_move[moved].moved= true;
         }
+
+        lock_trx->mutex_unlock();
       }
     }
   }
@@ -4858,9 +4865,10 @@ lock_rec_insert_check_and_lock(
                                                          g.cell(), id,
                                                          heap_no, trx))
       {
-        TMTrxGuard tg{*trx};
+        trx->mutex_lock();
         err= lock_rec_enqueue_waiting(c_lock, type_mode, id, block->frame,
                                       heap_no, index, thr, nullptr);
+        trx->mutex_unlock();
       }
     }
   }
